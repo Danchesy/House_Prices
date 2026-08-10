@@ -240,6 +240,7 @@ def submission_output_path(cfg: DictConfig, model_name: str) -> str:
     submit_dir = os.path.dirname(cfg.data.submission_path) or cfg.data.results_dir
     return os.path.join(submit_dir, f"{model_name}_submission.csv")
 
+
 def get_all_categorical_columns(cfg: DictConfig) -> list[str]:
     """Объединяет все категориальные колонки из конфига."""
     cat_cols = []

@@ -72,12 +72,6 @@ def main(cfg: DictConfig) -> None:
             {k: v for k, v in model_cfg.items() if k not in META_KEYS}
         )
 
-        # cat_features = (
-        #     list(OmegaConf.to_container(model_cfg.cat_features, resolve=True))
-        #     if "cat_features" in model_cfg
-        #     else None
-        # )
-
         model = hydra.utils.instantiate(clean_cfg)
 
         grid_p = (
