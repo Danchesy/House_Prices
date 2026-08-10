@@ -1,0 +1,23 @@
+defaults:
+  - /preprocessing/encoder@encoder: complex
+  - /preprocessing/scaler@scaler: null
+  - _self_
+
+_target_: sklearn.tree.DecisionTreeRegressor
+
+criterion: gini
+
+max_depth: 8
+
+random_state: ${seed}
+
+is_cat: ${preprocessing.encode_categorical}
+
+is_scale: false
+
+grid_params:
+  model__criterion: ["squared_error", "absolute_error"]
+  model__max_depth: [3, 5, 8, 12, null]
+  model__min_samples_split: [5, 10, 20, 30]
+  model__min_samples_leaf: [2, 5, 10, 20]
+  model__max_features: [null, "sqrt", "log2", 0.5, 0.8]

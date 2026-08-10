@@ -1,0 +1,35 @@
+defaults:
+  - /preprocessing/encoder@encoder: null
+  - /preprocessing/scaler@scaler: null
+  - _self_
+
+_target_: catboost.CatBoostRegressor
+
+iterations: 300
+
+learning_rate: 0.05
+
+depth: 6
+
+# cat_features:
+#   - Embarked
+#   - Initial
+#   - Fare_cat
+#   - Pclass
+#   - Male
+
+verbose: false
+
+random_seed: ${seed}
+
+is_cat: false
+
+is_scale: false
+
+grid_params:
+  model__loss_function: ["RMSE"]
+  model__iterations: [100, 300, 600]
+  model__learning_rate: [0.01, 0.05, 0.1, 0.2]
+  model__depth: [4, 6, 8]
+  model__l2_leaf_reg: [0.1, 1.0, 5.0, 10.0]
+  model__subsample: [0.5, 0.7, 1.0]

@@ -1,0 +1,95 @@
+defaults:
+  - encoder: null
+  - scaler: null
+  - _self_
+
+scale_numeric: true
+
+encode_categorical: true
+
+ohe_cols:
+  - MSZoning
+  - Street
+  - Alley
+  - LandContour
+  - Utilities
+  - LotConfig
+  - Condition1
+  - Condition2
+  - BldgType
+  - HouseStyle
+  - RoofStyle
+  - RoofMatl
+  - MasVnrType
+  - Foundation
+  - Heating
+  - CentralAir
+  - Electrical
+  - GarageType
+  - PavedDrive
+  - MiscFeature
+  - SaleType
+  - SaleCondition
+
+ordinal_cols:
+  - ExterQual
+  - ExterCond
+  - BsmtQual
+  - BsmtCond
+  - BsmtExposure
+  - BsmtFinType1
+  - BsmtFinType2
+  - HeatingQC
+  - KitchenQual
+  - FireplaceQu
+  - GarageFinish
+  - GarageQual
+  - GarageCond
+  - PoolQC
+  - Fence
+  - LandSlope
+  - LotShape
+  - Functional
+
+quantile_cols:
+  - Neighborhood
+  - Exterior1st
+  - Exterior2nd
+
+num_cols:
+  - MSSubClass
+  - LotFrontage
+  - LotArea
+  - OverallQual
+  - OverallCond
+  - YearBuilt
+  - YearRemodAdd
+  - MasVnrArea
+  - BsmtFinSF1
+  - BsmtFinSF2
+  - BsmtUnfSF
+  - TotalBsmtSF
+  - 1stFlrSF
+  - 2ndFlrSF
+  - LowQualFinSF
+  - GrLivArea
+  - BsmtFullBath
+  - BsmtHalfBath
+  - FullBath
+  - HalfBath
+  - BedroomAbvGr
+  - KitchenAbvGr
+  - TotRmsAbvGrd
+  - Fireplaces
+  - GarageYrBlt
+  - GarageCars
+  - GarageArea
+  - WoodDeckSF
+  - OpenPorchSF
+  - EnclosedPorch
+  - 3SsnPorch
+  - ScreenPorch
+  - PoolArea
+  - MiscVal
+  - MoSold
+  - YrSold

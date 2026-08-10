@@ -1,0 +1,22 @@
+defaults:
+  - data: default 
+  - training: default
+  - preprocessing: default
+  - tuning: default
+  - logging: default
+  - model@model.linear_model: linear_model
+  - model@model.knn: knn
+  - model@model.dt: dt
+  - model@model.rf: rf
+  - model@model.xgboost: xgboost
+  - model@model.lightgbm: lightgbm
+  - model@model.catboost: catboost
+  - model@model.nn_model: nn_model
+  - model@model.ensemble: ensemble
+  - _self_
+
+experiment_name: House_Pricing
+
+target_column: SalePrice
+
+seed: 42

@@ -1,0 +1,18 @@
+log_file_name: "experiments.jsonl"
+
+console: true
+
+save_model: true
+
+save_predictions: true
+
+wandb:
+
+  enabled: false
+
+  project: house_pricing
+
+  entity: null
+
+  tags:
+    - regression

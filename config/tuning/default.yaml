@@ -1,0 +1,27 @@
+enabled: true
+
+n_trials: 1
+
+timeout: null
+
+direction: maximize
+
+metric: neg_root_mean_squared_error
+
+use_optuna: true
+
+use_grid_search: false
+
+metrics:
+  mse:
+    _target_: sklearn.metrics.mean_squared_error
+    _partial_: true
+  r2:
+    _target_: sklearn.metrics.r2_score
+    _partial_: true
+  mae:
+    _target_: sklearn.metrics.mean_absolute_error
+    _partial_: true
+  rmse:
+    _target_: sklearn.metrics.root_mean_squared_error
+    _partial_: true

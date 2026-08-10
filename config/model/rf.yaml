@@ -1,0 +1,26 @@
+defaults:
+  - /preprocessing/encoder@encoder: complex
+  - /preprocessing/scaler@scaler: null
+  - _self_
+
+_target_: sklearn.ensemble.RandomForestRegressor
+
+n_estimators: 300
+
+max_depth: 8
+
+min_samples_split: 2
+
+random_state: ${seed}
+
+is_cat: ${preprocessing.encode_categorical}
+
+is_scale: false
+
+grid_params:
+  model__n_estimators: [100, 250, 500]
+  model__criterion: ["squared_error", "absolute_error"]
+  model__max_depth: [5, 10, 15, null]
+  model__min_samples_split: [5, 10, 20, 30]
+  model__min_samples_leaf: [2, 5, 10, 20]
+  model__max_features: [null, "sqrt", "log2", 0.5, 0.8]

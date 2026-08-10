@@ -1,0 +1,24 @@
+encoders:
+  ohe_categorical:
+    factory:
+      _target_: sklearn.preprocessing.OneHotEncoder
+      drop: first
+      handle_unknown: ignore
+      sparse_output: false
+    columns: ${preprocessing.ohe_cols}
+
+  quantile_categorical:
+    factory:
+      _target_: category_encoders.QuantileEncoder
+      m: 1.0
+      quantile: 0.5
+    columns: ${preprocessing.quantile_cols}
+
+  ordinal_categorical:
+    factory:
+      _target_: sklearn.preprocessing.OrdinalEncoder
+      handle_unknown: use_encoded_value
+      unknown_value: -1
+    columns: ${preprocessing.ordinal_cols}
+
+

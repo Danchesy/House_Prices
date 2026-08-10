@@ -1,0 +1,11 @@
+_target_: sklearn.preprocessing.TargetEncoder
+
+target_type: 'auto' 
+
+smooth: 'auto'
+
+cv: 5
+
+shuffle: 'deprecated'
+
+random_state: ${seed}

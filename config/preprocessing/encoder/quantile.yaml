@@ -1,0 +1,7 @@
+_target_: category_encoders.QuantileEncoder
+
+m: 1.0
+
+quantile: 0.5
+
+cv: 5

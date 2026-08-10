@@ -1,0 +1,5 @@
+_target_: sklearn.preprocessing.OrdinalEncoder
+
+handle_unknown: use_encoded_value
+
+unknown_value: -1

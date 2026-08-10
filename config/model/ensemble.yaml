@@ -1,0 +1,11 @@
+top_k: 3
+list:
+  - suffix: "stacking"
+    factory:
+      _target_: ensembles.load_stacking_pipeline
+      top_k: ${model.ensemble.top_k}
+
+  - suffix: "voting"
+    factory:
+      _target_: ensembles.load_voting_pipeline
+      top_k: ${model.ensemble.top_k}

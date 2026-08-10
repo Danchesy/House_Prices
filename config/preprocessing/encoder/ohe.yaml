@@ -1,0 +1,5 @@
+_target_: sklearn.preprocessing.OneHotEncoder
+
+sparse_output: false
+
+handle_unknown: ignore

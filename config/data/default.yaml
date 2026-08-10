@@ -1,0 +1,9 @@
+train_path: dataset/train.csv
+
+test_path: dataset/test.csv
+
+submission_path: submissions/
+
+models_dir: models
+
+results_dir: results
