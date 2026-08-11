@@ -10,11 +10,13 @@ __all__ = [
     "add_result",
 ]
 
+
 class WandbLogger:
     """Логирование экспериментов в Weights & Biases."""
 
     def __init__(self, cfg: DictConfig) -> None:
-        self.enabled = cfg.logging.wandb.enabled
+        """Инициализирует run W&B на основе конфигурации проекта."""
+        self.enabled: bool = cfg.logging.wandb.enabled
 
         if not self.enabled:
             return
@@ -28,7 +30,7 @@ class WandbLogger:
         )
 
     def log_experiment(self, experiment: dict[str, Any]) -> None:
-        """Логирует результаты одного эксперимента."""
+        """Логирует результаты одного эксперимента в W&B."""
         if not self.enabled:
             return
 
@@ -46,21 +48,16 @@ class WandbLogger:
         wandb.log(log_data)
 
     def log_pipeline(self, model_path: str) -> None:
-        """Сохраняет обученную модель."""
+        """Сохраняет обученную модель как артефакт W&B."""
         if not self.enabled:
             return
 
-        artifact = wandb.Artifact(
-            name="best_model",
-            type="model",
-        )
-
+        artifact = wandb.Artifact(name="best_model", type="model")
         artifact.add_file(model_path)
-
         wandb.log_artifact(artifact)
 
     def finish(self) -> None:
-        """Завершает текущий run."""
+        """Завершает текущий run W&B."""
         if self.enabled:
             wandb.finish()
 
@@ -71,7 +68,7 @@ def add_result(
     log_file_path: str | None = None,
 ) -> dict[str, Any]:
     """
-    Добавляет результат в список и дописывает его в файл на диске.
+    Добавляет результат эксперимента в список и дописывает его в JSONL-файл.
 
     Args:
         output: Словарь-результат эксперимента
@@ -92,10 +89,10 @@ def add_result(
 
     experiment_data = {
         "model": model_name,
-        "mse": float(output.get("mse")),
-        "rmse": float(output.get("rmse")),
-        "r2": float(output.get("r2_score")),
-        "mae": float(output.get("mae")),
+        "mse": output.get("mse"),
+        "rmse": output.get("rmse"),
+        "r2": output.get("r2"),
+        "mae": output.get("mae"),
         "std": float(output.get("std_score", 0.0)),
         "params": {str(k): str(v) for k, v in raw_params.items()},
         "tuning_time_sec": output.get("tuning_time_sec"),
@@ -107,8 +104,6 @@ def add_result(
     if results is not None:
         results.append(experiment_data)
 
-    # Дописываем в файл ('a' — append)
-    # JSON Lines (один эксперимент — одна строчка в файле)
     if log_file_path:
         with open(log_file_path, mode="a", encoding="utf-8") as f:
             f.write(json.dumps(experiment_data, ensure_ascii=False) + "\n")
@@ -117,5 +112,6 @@ def add_result(
 
 
 def _log(message: str, console: bool) -> None:
+    """Выводит сообщение в консоль, если логирование включено."""
     if console:
         print(message)

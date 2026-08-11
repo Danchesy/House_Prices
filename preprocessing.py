@@ -1,3 +1,4 @@
+import inspect
 from typing import Any
 
 import hydra
@@ -7,6 +8,40 @@ from omegaconf import DictConfig, OmegaConf
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OrdinalEncoder
+from sklearn.utils.validation import check_is_fitted
+
+
+class QuantileEncoderWrapper(BaseEstimator, TransformerMixin):
+    """Совместимая обёртка над category_encoders.QuantileEncoder для sklearn Pipeline."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        """Сохраняет параметры и инициализирует внутренний encoder."""
+        self.kwargs = kwargs
+        self.encoder_ = None
+
+    def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "QuantileEncoderWrapper":
+        """Обучает encoder на признаках и целевой переменной."""
+        from category_encoders import QuantileEncoder
+
+        self.encoder_ = QuantileEncoder(**self.kwargs)
+        if y is None:
+            y = pd.Series(0, index=X.index)
+        self.encoder_.fit(X, y)
+        return self
+
+    def transform(self, X: pd.DataFrame, y: pd.Series | None = None) -> pd.DataFrame:
+        """Преобразует данные с помощью обученного encoder."""
+        check_is_fitted(self, "encoder_")
+        if y is None:
+            y = pd.Series(0, index=X.index)
+        return self.encoder_.transform(X, y)
+
+    def fit_transform(self, X: pd.DataFrame, y: pd.Series | None = None, **fit_params: Any) -> pd.DataFrame:
+        """Выполняет fit и transform за один проход."""
+        self.fit(X, y)
+        return self.transform(X, y)
+
 
 __all__ = [
     "ORDINAL_CATEGORIES",
@@ -63,21 +98,19 @@ CAT_COLUMN_KEYS: dict[str, str] = {
     "ordinal_categorical": "ordinal_cols",
 }
 
+
 class FeatureEngineer(BaseEstimator, TransformerMixin):
-    """
-    Инженерия признаков для датасета House Prices.
+    """Выполняет базовую инженерию признаков для датасета House Prices."""
 
-    Выполняет имputation пропусков и подготовку категориальных признаков
-    перед кодированием в ColumnTransformer.
-    """
-
-    def __init__(self, na_cols: list[str] | None = None):
+    def __init__(self, na_cols: list[str] | None = None) -> None:
+        """Инициализирует набор колонок с пропусками и внутренние статистики."""
         self.na_cols = na_cols if na_cols is not None else NA_COLS
         self.electrical_mode_: str = "SBrkr"
         self.mas_mode_: str = "None"
         self.shape_to_frontage_: dict[str, float] = {}
 
     def fit(self, X: pd.DataFrame, y: pd.Series | None = None) -> "FeatureEngineer":
+        """Считает статистики по данным для последующего заполнения пропусков."""
         X = X.copy()
 
         self.electrical_mode_ = X["Electrical"].mode().iloc[0]
@@ -93,6 +126,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Заполняет пропуски и подготавливает признаки для кодирования."""
         X = X.copy()
 
         for col in self.na_cols:
@@ -111,23 +145,38 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         X["MasVnrType"] = X["MasVnrType"].fillna("None")
         X["MasVnrArea"] = X["MasVnrArea"].fillna(0.0)
 
+        num_cols = X.select_dtypes(include=["number"]).columns
+        X[num_cols] = X[num_cols].fillna(X[num_cols].median())
+
+        cat_cols = X.select_dtypes(include=["object"]).columns
+        X[cat_cols] = X[cat_cols].fillna("None")
+
         return X
 
 
 def _resolve_columns(cfg: DictConfig, key: str) -> list[str]:
+    """Возвращает список колонок из конфигурации preprocessing по заданному ключу."""
     return list(OmegaConf.to_container(cfg.preprocessing[key], resolve=True))
 
 
 def _instantiate_ordinal_encoder(factory_cfg: DictConfig, columns: list[str]) -> Any:
+    """Создаёт OrdinalEncoder с категориями, соответствующими колонкам."""
     cfg_dict = OmegaConf.to_container(factory_cfg, resolve=True)
+    cfg_dict.pop("_target_", None)
     cfg_dict["categories"] = [list(ORDINAL_CATEGORIES[col]) for col in columns]
-    return hydra.utils.instantiate(OmegaConf.create(cfg_dict))
+    cfg_dict["dtype"] = np.int64
+    return OrdinalEncoder(**cfg_dict)
 
 
-def _build_encoder_transformers(
-    cfg: DictConfig,
-    encoder_cfg: DictConfig,
-) -> list[tuple[str, Any, list[str]]]:
+def _instantiate_quantile_encoder(factory_cfg: DictConfig) -> Any:
+    """Создаёт обёртку QuantileEncoder на основе конфигурации."""
+    cfg_dict = OmegaConf.to_container(factory_cfg, resolve=True)
+    cfg_dict.pop("_target_", None)
+    return QuantileEncoderWrapper(**cfg_dict)
+
+
+def _build_encoder_transformers(cfg: DictConfig, encoder_cfg: DictConfig) -> list[tuple[str, Any, list[str]]]:
+    """Создаёт список transformers для кодирования категориальных признаков."""
     if "encoders" in encoder_cfg:
         transformers = []
 
@@ -141,13 +190,17 @@ def _build_encoder_transformers(
             target = spec.factory.get("_target_", "")
             if "OrdinalEncoder" in target:
                 encoder = _instantiate_ordinal_encoder(spec.factory, columns)
+            elif "QuantileEncoder" in target:
+                encoder = _instantiate_quantile_encoder(spec.factory)
             else:
                 encoder = hydra.utils.instantiate(spec.factory)
 
             transformers.append((name, encoder, columns))
 
         return transformers
-    
+
+    return []
+
 
 def preprocessor(
     cfg: DictConfig,
@@ -160,11 +213,11 @@ def preprocessor(
     Создает пайплайн предобработки данных House Prices.
 
     Args:
-        cfg: конфиг с секцией preprocessing (ohe_cols, ordinal_cols, quantile_cols)
-        is_scale: масштабировать числовые признаки
-        is_cat: кодировать категориальные признаки
+        cfg: конфиг с секцией preprocessing
+        is_scale: флаг, масштабировать ли числовые признаки
+        is_cat: флаг, кодировать ли категориальные признаки
         scaler: sklearn-скейлер для числовых признаков
-        encoder_cfg: конфиг энкодера (complex.yaml или одиночный энкодер)
+        encoder_cfg: конфиг энкодера
     """
     feature_engineer = FeatureEngineer()
     transformers = []
@@ -176,7 +229,8 @@ def preprocessor(
         transformers.extend(_build_encoder_transformers(cfg, encoder_cfg))
 
     if is_scale:
-        transformers.append(("num", scaler, cfg.preprocessing.num_cols))
+        numeric_cols = list(OmegaConf.to_container(cfg.preprocessing.num_cols, resolve=True))
+        transformers.append(("num", scaler, numeric_cols))
 
     if not transformers:
         return Pipeline([("feature_engineering", feature_engineer)])
@@ -214,8 +268,13 @@ def build_preprocessor(
     )
 
 
-def pipeline_fit_params(cat_features: list[str] | None) -> dict[str, Any]:
-    """Параметры fit для CatBoost: cat_features нельзя задавать в __init__ (ломает CV clone)."""
+def pipeline_fit_params(model: Any, cat_features: list[str] | None = None) -> dict[str, Any]:
+    """Возвращает fit-параметры только для моделей, поддерживающих cat_features."""
     if not cat_features:
         return {}
-    return {"model__cat_features": list(cat_features)}
+
+    fit_signature = inspect.signature(getattr(model, "fit", None))
+    if "cat_features" in fit_signature.parameters:
+        return {"model__cat_features": list(cat_features)}
+
+    return {}

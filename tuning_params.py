@@ -52,15 +52,20 @@ def grid_tuning(
     X_submit: pd.DataFrame | None = None,
     logger: Any = None,
 ) -> GridSearchCV:
-    """Обёртка GridSearchCV: строит пайплайн с предобработкой, обучает, логирует и сохраняет лучший estimator.
+    """Выполняет GridSearchCV для подбора гиперпараметров и логирования результатов.
 
     Args:
         model: sklearn-совместимый классификатор.
         params: сетка гиперпараметров с префиксом ``model__``.
         X_train, y_train: обучающая выборка.
         X_test, y_test: валидационная выборка для итоговой оценки.
+        cfg: Конфигурационный объект Hydra (DictConfig), содержит секции logging, tuning, training, data.
+        model_cfg: Конфигурация модели (DictConfig), передаётся в build_preprocessor.
+        methods: Словарь метрик для дополнительной оценки, где ключ — имя метрики, значение — конфиг метрики.
         is_scale: передаётся в :func:`preprocessor`.
         is_cat: передаётся в :func:`preprocessor`.
+        cat_features: Список имён категориальных признаков (передаётся в pipeline_fit_params).
+        X_submit: Данные для генерации файла сабмишена (опционально).
         logger: объект с методом ``log_experiment`` / ``log_pipeline``.
 
     Returns:
@@ -74,10 +79,7 @@ def grid_tuning(
 
     pipeline = Pipeline(
         [
-            (
-                "preprocessor",
-                build_preprocessor(cfg, model_cfg, is_scale=is_scale, is_cat=is_cat),
-            ),
+            ("preprocessor", build_preprocessor(cfg, model_cfg, is_scale=is_scale, is_cat=is_cat)),
             ("model", model),
         ]
     )
@@ -100,38 +102,28 @@ def grid_tuning(
         stage="train",
         X=X_train,
         y=y_train,
-        **pipeline_fit_params(cat_features),
+        **pipeline_fit_params(model, cat_features),
     )
 
     _log(f"Best parameters: {grid_search.best_params_}", console)
     _log(f"Best CV {metric}: {grid_search.best_score_:.4f}", console)
-    _log(f"GridSearch trainig time: {train_output['train_time_sec']:.2f} s.", console)
+    _log(f"GridSearch training time: {train_output['train_time_sec']:.2f} s.", console)
 
     best_pipeline = grid_search.best_estimator_
 
-    pred_output = holdout_score(
-        pipeline=best_pipeline, X=X_test, y=y_test, metric=metric
-    )
+    pred_output = holdout_score(pipeline=best_pipeline, X=X_test, y=y_test, metric=metric)
 
     _log(f"Holdout {metric}: {pred_output['result']:.4f}", console)
-    _log(
-        f"Holdout predict ({len(X_test)} lines): {pred_output['result']:.4f} s.",
-        console,
-    )
-    _log(
-        f"Latency: {(pred_output['predict_time_sec'] / len(X_test)) * 1000:.4f} ms",
-        console,
-    )
+    _log(f"Holdout predict ({len(X_test)} lines): {pred_output['result']:.4f} s.", console)
+    _log(f"Latency: {(pred_output['predict_time_sec'] / len(X_test)) * 1000:.4f} ms", console)
 
     y_pred_holdout = best_pipeline.predict(X_test)
 
     metric_to_score = {}
     for name, metric_cfg in methods.items():
         metric_fn = hydra.utils.instantiate(metric_cfg)
-
         score = metric_fn(y_test, y_pred_holdout)
         metric_to_score[name] = float(score)
-
         _log(f"Holdout {name}: {score:.4f}", console)
 
     res = pipeline_return(
@@ -143,14 +135,12 @@ def grid_tuning(
     )
 
     model_name = model.__class__.__name__
-    filename = model_filename(cfg, model_name, "grid", grid_search.best_score_)
+    filename = model_filename(cfg, model_name, "grid", -grid_search.best_score_)
 
     res.update(metric_to_score)
     res.update({"path": filename})
 
-    experiment = add_result(
-        res, log_file_path=os.path.join(cfg.data.results_dir, "experiments.jsonl")
-    )
+    experiment = add_result(res, log_file_path=os.path.join(cfg.data.results_dir, "experiments.jsonl"))
 
     if logger is not None:
         logger.log_experiment(experiment)
@@ -185,17 +175,24 @@ def optuna_tuning(
     X_submit: pd.DataFrame | None = None,
     logger: Any = None,
 ) -> optuna.Study:
-    """Оптимизация гиперпараметров через Optuna с 5-fold CV внутри objective.
+    """Выполняет Optuna-оптимизацию гиперпараметров и обучает финальный пайплайн.
 
     Args:
-        model: базовый sklearn-классификатор (клонируется для каждого trial).
-        params_fn: функция ``(trial) -> dict`` с пространством поиска.
-        X_train, y_train: обучающая выборка.
-        X_test, y_test: выборка для финальной оценки лучшей модели.
-        direction: ``"maximize"`` или ``"minimize"``.
-        n_trials: число испытаний Optuna.
-        is_scale, is_cat: флаги предобработки.
-        logger: объект с методом ``log_experiment`` / ``log_pipeline``.
+        model: Базовый sklearn-совместимый классификатор/регрессор (клонируется для каждого trial).
+        params_fn: Функция, принимающая ``optuna.Trial`` и возвращающая словарь с гиперпараметрами для модели.
+        X_train: Обучающие признаки (pd.DataFrame).
+        y_train: Обучающие целевые значения (pd.Series).
+        X_test: Валидационные признаки для итоговой оценки (pd.DataFrame).
+        y_test: Валидационные целевые значения для итоговой оценки (pd.Series).
+        cfg: Конфигурационный объект Hydra (DictConfig), содержит секции logging, tuning, training, data.
+        model_cfg: Конфигурация модели (DictConfig), передаётся в build_preprocessor.
+        methods: Словарь метрик для дополнительной оценки, где ключ — имя метрики, значение — конфиг метрики.
+        n_trials: Количество испытаний (итераций оптимизации) Optuna.
+        is_scale: Флаг, указывающий, нужно ли масштабировать признаки в препроцессоре.
+        is_cat: Флаг, указывающий, нужно ли обрабатывать категориальные признаки в препроцессоре.
+        cat_features: Список имён категориальных признаков (передаётся в pipeline_fit_params).
+        X_submit: Данные для генерации файла сабмишена (опционально).
+        logger: Объект логгера с методами ``log_experiment`` и ``log_pipeline`` (опционально).
 
     Returns:
         Завершённый ``optuna.Study`` с атрибутами ``best_params`` и ``best_value``.
@@ -208,9 +205,10 @@ def optuna_tuning(
     direction = cfg.tuning.direction
     timeout = cfg.tuning.timeout
 
-    cv_params = pipeline_fit_params(cat_features)
+    cv_params = pipeline_fit_params(model, cat_features)
 
     def objective(trial: optuna.Trial) -> float:
+        """Оценивает один trial через кросс-валидацию."""
         params = params_fn(trial)
 
         current_model = clone(model)
@@ -218,12 +216,7 @@ def optuna_tuning(
 
         pipeline = Pipeline(
             [
-                (
-                    "preprocessor",
-                    build_preprocessor(
-                        cfg, model_cfg, is_scale=is_scale, is_cat=is_cat
-                    ),
-                ),
+                ("preprocessor", build_preprocessor(cfg, model_cfg, is_scale=is_scale, is_cat=is_cat)),
                 ("model", current_model),
             ]
         )
@@ -252,23 +245,14 @@ def optuna_tuning(
 
     _log(f"Best CV {metric}: {study.best_value:.4f}", console)
     _log(f"Best parameters: {best_params}", console)
-    _log(
-        f"Optuna optimization time ({n_trials} trials): {optimizer_output['optuna_time_sec']:.2f} s.",
-        console,
-    )
-    _log(
-        f"Mean time per trial: {optimizer_output['optuna_time_sec'] / max(n_trials, 1):.2f} s.",
-        console,
-    )
+    _log(f"Optuna optimization time ({n_trials} trials): {optimizer_output['optuna_time_sec']:.2f} s.", console)
+    _log(f"Mean time per trial: {optimizer_output['optuna_time_sec'] / max(n_trials, 1):.2f} s.", console)
 
     best_model = clone(model)
     best_model.set_params(**best_params)
 
     final_pipeline = Pipeline(
-        [
-            ("preprocessor", build_preprocessor(cfg, model_cfg, is_scale, is_cat)),
-            ("model", best_model),
-        ]
+        [("preprocessor", build_preprocessor(cfg, model_cfg, is_scale, is_cat)), ("model", best_model)]
     )
 
     train_output = run_method(
@@ -277,27 +261,22 @@ def optuna_tuning(
         stage="train",
         X=X_train,
         y=y_train,
-        **pipeline_fit_params(cat_features),
+        **pipeline_fit_params(model, cat_features),
     )
 
     pred_output = holdout_score(final_pipeline, X_test, y_test, metric)
 
     _log(f"Holdout {metric}: {pred_output['result']:.4f}", console)
     _log(f"Final pipeline's training: {train_output['train_time_sec']:.4f} s.", console)
-    _log(
-        f"Holdout predictions ({len(X_test)} lines): {pred_output['predict_time_sec']:.4f} s.",
-        console,
-    )
+    _log(f"Holdout predictions ({len(X_test)} lines): {pred_output['predict_time_sec']:.4f} s.", console)
 
     y_pred_holdout = final_pipeline.predict(X_test)
 
     metric_to_score = {}
     for name, metric_cfg in methods.items():
         metric_fn = hydra.utils.instantiate(metric_cfg)
-
         score = metric_fn(y_test, y_pred_holdout)
         metric_to_score[name] = float(score)
-
         _log(f"Holdout {name}: {score:.4f}", console)
 
     res = pipeline_return(
@@ -309,14 +288,12 @@ def optuna_tuning(
     )
 
     model_name = model.__class__.__name__
-    filename = model_filename(cfg, model_name, "optuna", study.best_value)
+    filename = model_filename(cfg, model_name, "optuna", -study.best_value)
 
     res.update(metric_to_score)
     res.update({"path": filename})
 
-    experiment = add_result(
-        res, log_file_path=os.path.join(cfg.data.results_dir, "experiments.jsonl")
-    )
+    experiment = add_result(res, log_file_path=os.path.join(cfg.data.results_dir, "experiments.jsonl"))
 
     if logger is not None:
         logger.log_experiment(experiment)
@@ -335,7 +312,7 @@ def optuna_tuning(
 
 
 def linreg_optuna_params(trial: optuna.Trial) -> dict[str, Any]:
-    """Пространство поиска гиперпараметров для линейных моделей регрессии."""
+    """Возвращает пространство поиска гиперпараметров для линейной регрессии."""
     return {
         "alpha": trial.suggest_float("alpha", 1e-4, 100.0, log=True),
         "l1_ratio": trial.suggest_float("l1_ratio", 0.0, 1.0),
@@ -344,91 +321,73 @@ def linreg_optuna_params(trial: optuna.Trial) -> dict[str, Any]:
 
 
 def knn_optuna_params(trial: optuna.Trial) -> dict[str, Any]:
-    """Пространство поиска гиперпараметров KNN Regressor."""
+    """Возвращает пространство поиска гиперпараметров для KNN Regressor."""
     return {
-        "n_neighbors": trial.suggest_int("n_neighbors", 3, 21, step=2), # Расширен диапазон
+        "n_neighbors": trial.suggest_int("n_neighbors", 3, 21, step=2),
         "weights": trial.suggest_categorical("weights", ["distance", "uniform"]),
         "leaf_size": trial.suggest_categorical("leaf_size", [20, 30, 50]),
-        "metric": trial.suggest_categorical(
-            "metric", ["minkowski", "manhattan", "euclidean"] # Заменено cosine (редко для регрессии)
-        ),
+        "metric": trial.suggest_categorical("metric", ["minkowski", "manhattan", "euclidean"]),
     }
 
 
 def dt_optuna_params(trial: optuna.Trial) -> dict[str, Any]:
-    """Пространство поиска гиперпараметров DecisionTreeRegressor."""
+    """Возвращает пространство поиска гиперпараметров для DecisionTreeRegressor."""
     return {
-        "criterion": trial.suggest_categorical("criterion", ["squared_error", "absolute_error"]), # Специфично для регрессии
-        "max_depth": trial.suggest_int("max_depth", 3, 12), # Увеличена глубина для регрессии
-        "min_samples_split": trial.suggest_categorical(
-            "min_samples_split", [2, 5, 10, 20]
-        ),
-        "min_samples_leaf": trial.suggest_categorical(
-            "min_samples_leaf", [1, 2, 5, 10]
-        ),
-        "max_features": trial.suggest_categorical(
-            "max_features", [None, "sqrt", "log2", 0.5, 0.8]
-        ),
+        "criterion": trial.suggest_categorical("criterion", ["squared_error", "absolute_error"]),
+        "max_depth": trial.suggest_int("max_depth", 3, 12),
+        "min_samples_split": trial.suggest_categorical("min_samples_split", [2, 5, 10, 20]),
+        "min_samples_leaf": trial.suggest_categorical("min_samples_leaf", [1, 2, 5, 10]),
+        "max_features": trial.suggest_categorical("max_features", [None, "sqrt", "log2", 0.5, 0.8]),
     }
 
 
 def rf_optuna_params(trial: optuna.Trial) -> dict[str, Any]:
-    """Пространство поиска гиперпараметров RandomForestRegressor."""
+    """Возвращает пространство поиска гиперпараметров для RandomForestRegressor."""
     return {
-        "n_estimators": trial.suggest_int("n_estimators", 100, 500), # Оптимизирован верхний порог скорости
+        "n_estimators": trial.suggest_int("n_estimators", 100, 500),
         "criterion": trial.suggest_categorical("criterion", ["squared_error", "absolute_error"]),
-        "max_depth": trial.suggest_int("max_depth", 5, 15), # Деревья в регрессионном RF должны быть глубже
-        "min_samples_split": trial.suggest_categorical(
-            "min_samples_split", [2, 5, 10, 20]
-        ),
-        "min_samples_leaf": trial.suggest_categorical(
-            "min_samples_leaf", [1, 2, 5, 10]
-        ),
-        "max_features": trial.suggest_categorical(
-            "max_features", [None, "sqrt", "log2", 0.5, 0.8]
-        ),
+        "max_depth": trial.suggest_int("max_depth", 5, 15),
+        "min_samples_split": trial.suggest_categorical("min_samples_split", [2, 5, 10, 20]),
+        "min_samples_leaf": trial.suggest_categorical("min_samples_leaf", [1, 2, 5, 10]),
+        "max_features": trial.suggest_categorical("max_features", [None, "sqrt", "log2", 0.5, 0.8]),
     }
 
 
 def xgb_optuna_params(trial: optuna.Trial) -> dict[str, Any]:
-    """Пространство поиска гиперпараметров XGBoost Regressor."""
+    """Возвращает пространство поиска гиперпараметров для XGBoost Regressor."""
     return {
-        "objective": "reg:squarederror", # Явно указываем задачу регрессии
-        "max_depth": trial.suggest_int("max_depth", 3, 9), # Расширен диапазон глубины
+        # "objective": "reg:squarederror",
+        "max_depth": trial.suggest_int("max_depth", 3, 9),
         "n_estimators": trial.suggest_int("n_estimators", 100, 500),
         "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
         "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
         "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
         "min_child_weight": trial.suggest_int("min_child_weight", 1, 20),
         "subsample": trial.suggest_float("subsample", 0.5, 1.0, step=0.1),
-        "colsample_bytree": trial.suggest_float(
-            "colsample_bytree", 0.5, 1.0, step=0.1
-        ),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0, step=0.1),
     }
 
 
 def lgbm_optuna_params(trial: optuna.Trial) -> dict[str, Any]:
-    """Пространство поиска гиперпараметров LightGBM Regressor."""
+    """Возвращает пространство поиска гиперпараметров для LightGBM Regressor."""
     return {
-        "objective": "regression", # Явно указываем задачу регрессии
+        # "objective": "regression",
         "max_depth": trial.suggest_int("max_depth", 3, 9),
-        "num_leaves": trial.suggest_int("num_leaves", 10, 100), # Важно для LGBM
+        "num_leaves": trial.suggest_int("num_leaves", 10, 100),
         "n_estimators": trial.suggest_int("n_estimators", 100, 500),
         "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
         "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 10.0, log=True),
         "reg_alpha": trial.suggest_float("reg_alpha", 1e-3, 10.0, log=True),
-        "min_child_samples": trial.suggest_int("min_child_samples", 5, 50), # Заменено на корректный аналог min_child_weight
+        "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
         "subsample": trial.suggest_float("subsample", 0.5, 1.0, step=0.1),
-        "colsample_bytree": trial.suggest_float(
-            "colsample_bytree", 0.5, 1.0, step=0.1
-        ),
+        "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0, step=0.1),
     }
 
 
 def catboost_optuna_params(trial: optuna.Trial) -> dict[str, Any]:
-    """Пространство поиска гиперпараметров CatBoost Regressor."""
+    """Возвращает пространство поиска гиперпараметров для CatBoost Regressor."""
     return {
-        "loss_function": "RMSE", # Настройка лосса для регрессии
+        "loss_function": "RMSE",
         "iterations": trial.suggest_int("iterations", 100, 600),
         "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
         "depth": trial.suggest_int("depth", 4, 8),

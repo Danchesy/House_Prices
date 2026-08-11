@@ -1,10 +1,12 @@
 import os
 from pathlib import Path
+from typing import Any
 
 import hydra
 import joblib
 import numpy as np
 import pandas as pd
+from omegaconf import DictConfig
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import root_mean_squared_error
 
@@ -18,105 +20,154 @@ from utils import (
     submission_output_path,
 )
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _resolve_pipeline_path(path_value: str | os.PathLike[str] | None) -> Path | None:
+    """Пытается найти путь к сохранённой модели по относительному или именованному пути."""
+    if path_value is None:
+        return None
+
+    raw_path = Path(str(path_value))
+    if raw_path.is_absolute():
+        return raw_path if raw_path.exists() else None
+
+    candidates = [raw_path, PROJECT_ROOT / raw_path, Path.cwd() / raw_path]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    if raw_path.name:
+        for base_dir in [
+            PROJECT_ROOT / "models",
+            Path.cwd() / "models",
+            PROJECT_ROOT,
+            Path.cwd(),
+        ]:
+            candidate = base_dir / raw_path.name
+            if candidate.exists():
+                return candidate.resolve()
+
+    return None
+
 
 class PreTrainedStackingRegressor:
-    def __init__(self, estimators, final_estimator):
+    """Регрессор-стекер, который использует уже обученные модели как базовые предикторы."""
+
+    def __init__(self, estimators: list[tuple[str, Any]], final_estimator: Any) -> None:
+        """Сохраняет базовые модели и финальный мета-алгоритм."""
         self.estimators = estimators
         self.final_estimator = final_estimator
-        
-    def _get_meta_features(self, X):
-        meta_features = []
-        for name, pipe in self.estimators:
-            preds = pipe.predict_proba(X)[:, 1]
+
+    def _get_meta_features(self, X: pd.DataFrame) -> np.ndarray:
+        """Получает мета-признаки из предсказаний базовых моделей."""
+        meta_features: list[np.ndarray] = []
+        for _, pipe in self.estimators:
+            preds = pipe.predict(X)
             meta_features.append(preds)
         return np.column_stack(meta_features)
 
-    def fit(self, X, y):
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> "PreTrainedStackingRegressor":
+        """Обучает финальный мета-регрессор на предсказаниях базовых моделей."""
         X_meta = self._get_meta_features(X)
         self.final_estimator.fit(X_meta, y)
         return self
 
-    def predict(self, X):
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        """Делает предсказание через мета-регрессор."""
         X_meta = self._get_meta_features(X)
         return self.final_estimator.predict(X_meta)
 
-    def score(self, X, y):
+    def score(self, X: pd.DataFrame, y: pd.Series) -> float:
+        """Возвращает RMSE для оценки качества ансамбля."""
         return root_mean_squared_error(y, self.predict(X))
 
-    def get_params(self):
+    def get_params(self) -> dict[str, Any]:
         """Возвращает параметры для совместимости с логированием."""
         return {
             "estimators_count": len(self.estimators),
-            "estimators_names": [name for name, _ in self.estimators]
+            "estimators_names": [name for name, _ in self.estimators],
         }
 
 
 class PreTrainedVotingRegressor:
-    def __init__(self, estimators):
-        self.estimators = estimators  # Список кортежей [(name, pipe), ...]
+    """Регрессор-голосование, который агрегирует предсказания обученных моделей."""
 
-    def fit(self, X=None, y=None):
-        # Заглушка для совместимости с API sklearn.
-        # Берутся предобученные модели.
+    def __init__(self, estimators: list[tuple[str, Any]]) -> None:
+        """Сохраняет список базовых моделей для агрегации."""
+        self.estimators = estimators
+
+    def fit(self, X: pd.DataFrame | None = None, y: pd.Series | None = None) -> "PreTrainedVotingRegressor":
+        """Поддерживает совместимость с API sklearn, не обучая модели заново."""
         return self
 
-    def predict(self, X):
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        """Среднее предсказание всех базовых моделей."""
         all_votes = [pipe.predict(X) for _, pipe in self.estimators]
         return np.mean(all_votes, axis=0)
 
-    def score(self, X, y):
+    def score(self, X: pd.DataFrame, y: pd.Series) -> float:
+        """Возвращает RMSE для оценки качества ансамбля."""
         return root_mean_squared_error(y, self.predict(X))
 
-    def get_params(self):
+    def get_params(self) -> dict[str, Any]:
         """Возвращает параметры для совместимости с логированием."""
         return {
             "estimators_count": len(self.estimators),
-            "estimators_names": [name for name, _ in self.estimators]
+            "estimators_names": [name for name, _ in self.estimators],
         }
 
 
-def load_stacking_pipeline(leaderboard: pd.DataFrame, top_k: int | None = None):
+def load_stacking_pipeline(leaderboard: pd.DataFrame, top_k: int | None = None) -> PreTrainedStackingRegressor:
+    """Создаёт стекер из лучших моделей из leaderboard."""
     pipelines = load_pipelines(leaderboard, top_k)
     estimators = list(pipelines.items())
-    
-    return PreTrainedStackingRegressor(
-        estimators=estimators,
-        final_estimator=LinearRegression(max_iter=1000, random_state=42)
-    )
+
+    return PreTrainedStackingRegressor(estimators=estimators, final_estimator=LinearRegression())
 
 
-def load_voting_pipeline(leaderboard: pd.DataFrame, top_k: int | None = None):
+def load_voting_pipeline(leaderboard: pd.DataFrame, top_k: int | None = None) -> PreTrainedVotingRegressor:
+    """Создаёт voting-регрессор из лучших моделей из leaderboard."""
     pipelines = load_pipelines(leaderboard, top_k)
     estimators = list(pipelines.items())
-    
+
     return PreTrainedVotingRegressor(estimators=estimators)
 
 
-def load_pipelines(leaderboard: pd.DataFrame, top_k: int | None = None):
+def load_pipelines(leaderboard: pd.DataFrame, top_k: int | None = None) -> dict[str, Any]:
+    """Загружает сохранённые пайплайны по путям из leaderboard."""
     best_models = (
-        leaderboard.sort_values(by="rmse", ascending=False)
-            .groupby("model", as_index=False)
-            .first()
+        leaderboard.sort_values(by="rmse", ascending=True)
+        .groupby("model", as_index=False)
+        .first()
     )
 
     if top_k is not None:
         best_models = best_models.head(top_k)
 
-    pipeline_paths = [Path(path) for path in best_models['path'].to_list()]
-    pipeline_names = best_models['model'].to_list()
+    pipelines = {}
+    for _, row in best_models.iterrows():
+        resolved_path = _resolve_pipeline_path(row["path"])
+        if resolved_path is None:
+            continue
+        pipelines[row["model"]] = joblib.load(resolved_path)
 
-    return {name: joblib.load(path) for path, name in zip(pipeline_paths, pipeline_names)}
+    if not pipelines:
+        raise FileNotFoundError("No saved model artifacts were found for the ensemble leaderboard entries.")
+
+    return pipelines
 
 
 def ensemble_return(
-    model,
-    metric_to_score,
-    path,
+    model: Any,
+    metric_to_score: dict[str, float],
+    path: str,
     tuning_time: float | None = None,
     predict_time: float | None = None,
     n_samples: int | None = None,
-) -> dict:
-    result = {
+) -> dict[str, Any]:
+    """Формирует словарь с метаданными ансамбля для логирования."""
+    result: dict[str, Any] = {
         "model": model,
         "mse": metric_to_score.get("mse", None),
         "rmse": metric_to_score.get("rmse", None),
@@ -132,14 +183,23 @@ def ensemble_return(
     if predict_time is not None:
         result["predict_time_sec"] = round(predict_time, 4)
         if n_samples and n_samples > 0:
-            # Latency: 1 obj per ms
             latency_ms = (predict_time / n_samples) * 1000
             result["latency_ms_per_sample"] = round(latency_ms, 4)
 
     return result
 
 
-def make_ensembles(X_train, X_val, y_train, y_val, X_submit, methods, cfg, logger=None):    
+def make_ensembles(
+    X_train: pd.DataFrame,
+    X_val: pd.DataFrame,
+    y_train: pd.Series,
+    y_val: pd.Series,
+    X_submit: pd.DataFrame | None,
+    methods: dict[str, Any],
+    cfg: DictConfig,
+    logger: Any = None,
+) -> None:
+    """Создаёт и оценивает ансамбли из лучших моделей по leaderboard."""
     console = cfg.logging.console
     log_file_path = os.path.join(cfg.data.results_dir, "experiments.jsonl")
 
@@ -147,33 +207,26 @@ def make_ensembles(X_train, X_val, y_train, y_val, X_submit, methods, cfg, logge
 
     ensemble_configs = []
     for ens_cfg in cfg.model.ensemble.list:
-        ensemble_configs.append({
-            "suffix": ens_cfg.suffix,
-            "factory": lambda ec=ens_cfg: hydra.utils.instantiate(ec.factory, leaderboard=leaderboard_df)
-        })
+        ensemble_configs.append(
+            {
+                "suffix": ens_cfg.suffix,
+                "factory": lambda ec=ens_cfg: hydra.utils.instantiate(ec.factory, leaderboard=leaderboard_df),
+            }
+        )
 
     for ens in ensemble_configs:
         suffix = ens["suffix"]
         model = ens["factory"]()
-        
+
         _log(f"\n {model.__class__.__name__}", console)
 
-        train_output = run_method(
-            obj=model,
-            method_name="fit",
-            stage='train',
-            X=X_train,
-            y=y_train,
-        )
+        train_output = run_method(obj=model, method_name="fit", stage="train", X=X_train, y=y_train)
 
         pred_output = holdout_score(model, X_val, y_val, metric=cfg.tuning.metric)
 
         _log(f"Holdout {cfg.tuning.metric}: {pred_output['result']:.4f}", console)
         _log(f"Final pipeline's training: {train_output['train_time_sec']:.4f} s.", console)
-        _log(
-            f"Holdout predictions ({len(X_val)} lines): {pred_output['predict_time_sec']:.4f} s.",
-            console,
-        )
+        _log(f"Holdout predictions ({len(X_val)} lines): {pred_output['predict_time_sec']:.4f} s.", console)
 
         y_pred_holdout = model.predict(X_val)
         metric_to_score = {}
@@ -184,8 +237,8 @@ def make_ensembles(X_train, X_val, y_train, y_val, X_submit, methods, cfg, logge
             _log(f"Holdout {name}: {score:.4f}", console)
 
         model_name = model.__class__.__name__
-        filename = model_filename(cfg, model_name, f"ensemble_{suffix}", pred_output["result"])
-        
+        filename = model_filename(cfg, model_name, f"ensemble_{suffix}", -pred_output["result"])
+
         res = ensemble_return(
             model=model,
             metric_to_score=metric_to_score,

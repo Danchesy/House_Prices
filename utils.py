@@ -1,6 +1,7 @@
 import os
 import random
 import time
+from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
 from typing import Any
@@ -32,8 +33,9 @@ __all__ = [
     "time_and_score",
 ]
 
+
 def set_seed(seed: int = 42) -> None:
-    """Фиксирует seed для всех используемых библиотек (Python, NumPy, PyTorch)."""
+    """Фиксирует seed для всех используемых библиотек Python, NumPy и PyTorch."""
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
@@ -45,10 +47,8 @@ def set_seed(seed: int = 42) -> None:
         torch.backends.cudnn.benchmark = False
 
 
-def data_loading(
-    cfg: DictConfig,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.DataFrame]:
-    """Загружает и разделяет данные."""
+def data_loading(cfg: DictConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series, pd.DataFrame]:
+    """Загружает датасет и возвращает обучающую/валидационную выборки вместе с тестом."""
     train = pd.read_csv(cfg.data.train_path)
     test = pd.read_csv(cfg.data.test_path)
 
@@ -76,7 +76,7 @@ def pipeline_return(
     predict_time: float | None = None,
     n_samples: int | None = None,
 ) -> dict[str, Any]:
-    """Формирует словарь с результатами пайплайна, включая метрики времени.
+    """Формирует словарь с результатами пайплайна и временными метриками.
 
     Args:
         pipeline: Обученный пайплайн cv_scores: Массив оценок кросс-валидации или
@@ -101,24 +101,18 @@ def pipeline_return(
     if predict_time is not None:
         result["predict_time_sec"] = round(predict_time, 4)
         if n_samples and n_samples > 0:
-            # Latency: 1 obj per ms
             latency_ms = (predict_time / n_samples) * 1000
             result["latency_ms_per_sample"] = round(latency_ms, 4)
 
     return result
 
 
-def save_submission(
-    pipeline: Pipeline,
-    X_submit: pd.DataFrame,
-    submission_path: str,
-) -> None:
-    """Сохраняет предсказания в CSV для Kaggle."""
+def save_submission(pipeline: Pipeline, X_submit: pd.DataFrame, submission_path: str) -> None:
+    """Сохраняет предсказания модели в CSV-файл для Kaggle submission."""
     os.makedirs(os.path.dirname(submission_path) or ".", exist_ok=True)
     preds = pipeline.predict(X_submit)
-    submission = pd.DataFrame(
-        {"Id": X_submit.index, "SalePrice": preds.astype(float)}
-    )
+    preds = np.expm1(preds)
+    submission = pd.DataFrame({"Id": X_submit.index, "SalePrice": preds.astype(float)})
     submission.to_csv(submission_path, index=False)
     print(f"Submission saved: {submission_path}")
 
@@ -130,7 +124,7 @@ def plot_feature_importance(
     save_path: str | None = None,
 ) -> None:
     """
-    Визуализирует важность признаков для моделей с атрибутом feature_importances_.
+    Отображает и при необходимости сохраняет важность признаков для модели.
 
     Args:
         model: Обученная модель с атрибутом feature_importances_
@@ -140,25 +134,16 @@ def plot_feature_importance(
     """
     importances = model.feature_importances_
 
-    fi_df = pd.DataFrame(
-        {"Feature": feature_names, "Importance": importances}
-    ).sort_values(by="Importance", ascending=False)
+    fi_df = pd.DataFrame({"Feature": feature_names, "Importance": importances}).sort_values(
+        by="Importance", ascending=False
+    )
 
     fi_df = fi_df.head(top_n)
 
     plt.figure(figsize=(10, max(6, top_n * 0.4)))
-    sns.barplot(
-        x="Importance",
-        y="Feature",
-        data=fi_df,
-        palette="viridis",
-        legend=False,
-    )
+    sns.barplot(x="Importance", y="Feature", data=fi_df, palette="viridis", legend=False)
 
-    plt.title(
-        f"Top {top_n} Feature Importances ({model.__class__.__name__})",
-        fontsize=14,
-    )
+    plt.title(f"Top {top_n} Feature Importances ({model.__class__.__name__})", fontsize=14)
     plt.xlabel("Importance Score")
     plt.ylabel("Features")
     plt.tight_layout()
@@ -174,7 +159,7 @@ def generate_submission(
     pipeline_path: str | None = None,
     output_path: str | None = None,
 ) -> None:
-    """Генерирует файл сабмита из сохранённого пайплайна."""
+    """Генерирует CSV-файл сабмита на основе сохранённого пайплайна."""
     pipeline_path = pipeline_path or f"{cfg.data.models_dir}/full_pipeline.pkl"
     output_path = output_path or os.path.join(cfg.data.results_dir, "submission.csv")
 
@@ -182,10 +167,11 @@ def generate_submission(
     *_, test = data_loading(cfg)
     save_submission(pipeline, test, output_path)
 
+
 def ensure_dirs(cfg: DictConfig) -> None:
+    """Создаёт директории для моделей и результатов, если они отсутствуют."""
     os.makedirs(cfg.data.models_dir, exist_ok=True)
     os.makedirs(cfg.data.results_dir, exist_ok=True)
-    # os.makedirs(cfg.data.reports_dir, exist_ok=True)
 
 
 def model_filename(
@@ -193,64 +179,64 @@ def model_filename(
     model_name: str,
     method: str,
     score: float,
-    extension: str = 'pkl',
+    extension: str = "pkl",
 ) -> str:
+    """Формирует имя файла модели с учётом эксперимента и метрики качества."""
     models_dir = Path(cfg.data.models_dir)
-    
+
     prefix = f"{cfg.experiment_name}_" if cfg.get("experiment_name") else ""
     filename = f"{prefix}{model_name}_{method}_{score:.4f}.{extension}"
-    
+
     return (models_dir / filename).as_posix()
 
 
-def time_and_score(stage='train'):
-    def decorator(func):
+def time_and_score(stage: str = "train") -> Callable[[Callable[..., Any]], Callable[..., dict[str, Any]]]:
+    """Декоратор для измерения времени выполнения функции и возврата результата вместе со временем."""
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., dict[str, Any]]:
         @wraps(func)
-        def wrapper(*args, **kwargs):
-
-            final_stage = kwargs.pop('stage', stage)
-
+        def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            final_stage = kwargs.pop("stage", stage)
             start_train = time.time()
             result = func(*args, **kwargs)
             timer = time.time() - start_train
+            return {"result": result, f"{final_stage}_time_sec": timer}
 
-            return {
-                "result": result,
-                f"{final_stage}_time_sec": timer
-            }
         return wrapper
+
     return decorator
 
 
-@time_and_score(stage='predict')
+@time_and_score(stage="predict")
 def holdout_score(pipeline: Pipeline, X: pd.DataFrame, y: pd.Series, metric: str) -> float:
+    """Вычисляет значение выбранной метрики на валидационной выборке."""
     scorer = get_scorer(metric)
     return float(scorer(pipeline, X, y))
 
 
 @time_and_score()
-def run_method(obj, method_name, *args, **kwargs):
+def run_method(obj: Any, method_name: str, *args: Any, **kwargs: Any) -> Any:
+    """Вызывает метод объекта или функцию из глобального пространства имён."""
     method = getattr(obj, method_name) if obj is not None else globals()[method_name]
-    res = method(*args, **kwargs)
-
-    return res
+    return method(*args, **kwargs)
 
 
 def submission_output_path(cfg: DictConfig, model_name: str) -> str:
+    """Формирует путь к CSV-файлу сабмита для конкретной модели."""
     submit_dir = os.path.dirname(cfg.data.submission_path) or cfg.data.results_dir
     return os.path.join(submit_dir, f"{model_name}_submission.csv")
 
 
 def get_all_categorical_columns(cfg: DictConfig) -> list[str]:
-    """Объединяет все категориальные колонки из конфига."""
-    cat_cols = []
-    
+    """Объединяет все категориальные колонки из конфигурации preprocessing."""
+    cat_cols: list[str] = []
+
     cat_keys = ["ohe_cols", "ordinal_cols", "quantile_cols"]
-    
+
     for key in cat_keys:
         if key in cfg.preprocessing:
             cols = OmegaConf.to_container(cfg.preprocessing[key], resolve=True)
             if cols:
                 cat_cols.extend(cols)
-    
+
     return cat_cols

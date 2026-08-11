@@ -3,7 +3,7 @@ defaults:
   - /preprocessing/scaler@scaler: standard
   - _self_
 
-_target_: xgboost.XGBClassifier
+_target_: xgboost.XGBRegressor
 
 n_estimators: 300
 

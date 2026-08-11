@@ -11,13 +11,6 @@ learning_rate: 0.05
 
 depth: 6
 
-# cat_features:
-#   - Embarked
-#   - Initial
-#   - Fare_cat
-#   - Pclass
-#   - Male
-
 verbose: false
 
 random_seed: ${seed}

@@ -47,25 +47,30 @@ def main(cfg: DictConfig) -> None:
     logger = WandbLogger(cfg)
 
     X_train, X_val, y_train, y_val, X_submit = data_loading(cfg)
-
+    y_train, y_val = np.log1p(y_train), np.log1p(y_val)
+    
     if cfg.logging.console:
-        print(
-            f"Train : {X_train.shape} | Val : {X_val.shape} | Test : {X_submit.shape}"
-        )
+        print(f"Train : {X_train.shape} | Val : {X_val.shape} | Test : {X_submit.shape}")
 
     for model_name, model_cfg in cfg.model.items():
         if cfg.logging.console:
             print(f"\n{model_name.upper()}")
 
         if model_name == "nn_model":
-            nn_model(X_train, np.log1p(y_train), X_val, np.log1p(y_val), X_submit, cfg, logger=logger)
+            nn_model(X_train, y_train, X_val, y_val, X_submit, cfg, logger=logger)
             continue
 
-        elif model_name == "ensemble":
-            make_ensembles(X_train, X_val, np.log1p(y_train), np.log1p(y_val), X_submit, methods=cfg.tuning.metrics,
-                    cfg=cfg,
-                    logger=logger,
-                )    
+        if model_name == "ensemble":
+            make_ensembles(
+                X_train,
+                X_val,
+                y_train,
+                y_val,
+                X_submit,
+                methods=cfg.tuning.metrics,
+                cfg=cfg,
+                logger=logger,
+            )
             continue
 
         clean_cfg = OmegaConf.create(
@@ -86,9 +91,7 @@ def main(cfg: DictConfig) -> None:
             optuna_p = partial(linreg_optuna_params)
 
         is_scale = model_cfg.get("is_scale", False)
-        is_cat = model_cfg.get("is_cat", True)        
-        # is_scale = model_cfg.get("is_scale", cfg.preprocessing.scale_numeric)
-        # is_cat = model_cfg.get("is_cat", cfg.preprocessing.encode_categorical)
+        is_cat = model_cfg.get("is_cat", True)
 
         if cfg.tuning.enabled and grid_p and cfg.tuning.use_grid_search:
             grid_tuning(
@@ -127,13 +130,13 @@ def main(cfg: DictConfig) -> None:
                 logger=logger,
             )
 
-    table = (
-        load_leaderboard("results/experiments.jsonl")
-        .pipe(build_leaderboard_table)
-        .pipe(leaderboard_to_markdown)
-    )
+    # table = (
+    #     load_leaderboard("results/experiments.jsonl")
+    #     .pipe(build_leaderboard_table)
+    #     .pipe(leaderboard_to_markdown)
+    # )
 
-    update_readme_leaderboard("README.md", table)
+    # update_readme_leaderboard("README.md", table)
 
     logger.finish()
     if cfg.logging.console:

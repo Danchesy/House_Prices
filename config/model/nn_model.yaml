@@ -6,21 +6,17 @@ is_cat: ${preprocessing.encode_categorical}
 
 is_scale: ${preprocessing.scale_numeric}
 
-epochs: 50
+epochs: 100
 
 batch_size: 64
 
-patience: 30
+patience: 10
 
 min_delta: 1e-5
 
 shuffle: true
 
 dropout_rate: 0.2
-
-max_seq_len: 10
-
-embedding_dim: 16
 
 loss_function:
   _target_: torch.nn.MSELoss

@@ -1,6 +1,6 @@
 enabled: true
 
-n_trials: 1
+n_trials: 20
 
 timeout: null
 
@@ -8,9 +8,9 @@ direction: maximize
 
 metric: neg_root_mean_squared_error
 
-use_optuna: true
+use_optuna: false
 
-use_grid_search: false
+use_grid_search: true
 
 metrics:
   mse:
