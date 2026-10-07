@@ -123,6 +123,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         mas_mode = X["MasVnrType"].mode()
         self.mas_mode_ = mas_mode.iloc[0] if len(mas_mode) else "None"
 
+        self.num_cols_ = X.select_dtypes(include=["number"]).columns.tolist()
+        self.num_medians_ = X[self.num_cols_].median().to_dict()
+
         return self
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -145,8 +148,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         X["MasVnrType"] = X["MasVnrType"].fillna("None")
         X["MasVnrArea"] = X["MasVnrArea"].fillna(0.0)
 
-        num_cols = X.select_dtypes(include=["number"]).columns
-        X[num_cols] = X[num_cols].fillna(X[num_cols].median())
+        for col in self.num_cols_:
+            if col in X.columns:
+                X[col] = X[col].fillna(self.num_medians_[col])
 
         cat_cols = X.select_dtypes(include=["object"]).columns
         X[cat_cols] = X[cat_cols].fillna("None")
