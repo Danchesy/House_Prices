@@ -11,6 +11,8 @@ max_depth: 4
 
 learning_rate: 0.05
 
+n_jobs: ${training.n_jobs}
+
 random_state: ${seed}
 
 is_cat: true

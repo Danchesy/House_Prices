@@ -17,6 +17,8 @@ p: 2
 
 metric: minkowski
 
+n_jobs: ${training.n_jobs}
+
 is_cat: ${preprocessing.encode_categorical}
 
 is_scale: ${preprocessing.scale_numeric}

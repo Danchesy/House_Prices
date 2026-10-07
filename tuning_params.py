@@ -4,15 +4,15 @@ from typing import Any
 
 import hydra
 import joblib
+import numpy as np
 import optuna
 import pandas as pd
+from log_utils import _log, add_result
 from omegaconf import DictConfig
+from preprocessing import build_preprocessor, pipeline_fit_params
 from sklearn.base import clone
 from sklearn.model_selection import GridSearchCV, cross_val_score
 from sklearn.pipeline import Pipeline
-
-from log_utils import _log, add_result
-from preprocessing import build_preprocessor, pipeline_fit_params
 from utils import (
     ensure_dirs,
     holdout_score,
@@ -76,6 +76,7 @@ def grid_tuning(
     console = cfg.logging.console
     metric = cfg.tuning.metric
     cv_folds = cfg.training.cv_folds
+    n_jobs = cfg.training.n_jobs
 
     pipeline = Pipeline(
         [
@@ -90,7 +91,7 @@ def grid_tuning(
         scoring=metric,
         refit=True,
         cv=cv_folds,
-        n_jobs=-1,
+        n_jobs=n_jobs,
         verbose=1 if console else 0,
         pre_dispatch="2*n_jobs",
         return_train_score=False,
@@ -110,6 +111,15 @@ def grid_tuning(
     _log(f"GridSearch training time: {train_output['train_time_sec']:.2f} s.", console)
 
     best_pipeline = grid_search.best_estimator_
+    best_idx = grid_search.best_index_
+
+    cv_scores = np.array(
+        [
+            grid_search.cv_results_[f"split{i}_test_score"][best_idx]
+            for i in range(cv_folds)
+        ],
+        dtype=float,
+    )
 
     pred_output = holdout_score(pipeline=best_pipeline, X=X_test, y=y_test, metric=metric)
 
@@ -127,8 +137,8 @@ def grid_tuning(
         _log(f"Holdout {name}: {score:.4f}", console)
 
     res = pipeline_return(
-        best_pipeline,
-        grid_search.best_score_,
+        pipeline=best_pipeline,
+        cv_scores=cv_scores,
         tuning_time=train_output["train_time_sec"],
         predict_time=pred_output["predict_time_sec"],
         n_samples=len(X_test),
@@ -204,6 +214,7 @@ def optuna_tuning(
     cv_folds = cfg.training.cv_folds
     direction = cfg.tuning.direction
     timeout = cfg.tuning.timeout
+    n_jobs = cfg.training.n_jobs
 
     cv_params = pipeline_fit_params(model, cat_features)
 
@@ -227,6 +238,7 @@ def optuna_tuning(
             y_train,
             cv=cv_folds,
             scoring=metric,
+            n_jobs=n_jobs,
             params=cv_params,
         ).mean()
         return score
@@ -255,6 +267,16 @@ def optuna_tuning(
         [("preprocessor", build_preprocessor(cfg, model_cfg, is_scale, is_cat)), ("model", best_model)]
     )
 
+    cv_scores = cross_val_score(
+        final_pipeline,
+        X_train,
+        y_train,
+        cv=cv_folds,
+        scoring=metric,
+        n_jobs=n_jobs,
+        params=cv_params,
+    )
+
     train_output = run_method(
         obj=final_pipeline,
         method_name="fit",
@@ -281,7 +303,7 @@ def optuna_tuning(
 
     res = pipeline_return(
         final_pipeline,
-        study.best_value,
+        cv_scores=cv_scores,
         tuning_time=optimizer_output["optuna_time_sec"],
         predict_time=pred_output["predict_time_sec"],
         n_samples=len(X_test),

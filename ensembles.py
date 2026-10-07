@@ -1,3 +1,4 @@
+import inspect
 import os
 from pathlib import Path
 from typing import Any
@@ -7,12 +8,15 @@ import joblib
 import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
+from sklearn.base import clone
+from sklearn.ensemble import StackingRegressor
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import root_mean_squared_error
 
 from log_utils import _log, add_result
 from readme_leaderboard import load_leaderboard
 from utils import (
+    get_all_categorical_columns,
     holdout_score,
     model_filename,
     run_method,
@@ -51,45 +55,6 @@ def _resolve_pipeline_path(path_value: str | os.PathLike[str] | None) -> Path | 
     return None
 
 
-class PreTrainedStackingRegressor:
-    """Регрессор-стекер, который использует уже обученные модели как базовые предикторы."""
-
-    def __init__(self, estimators: list[tuple[str, Any]], final_estimator: Any) -> None:
-        """Сохраняет базовые модели и финальный мета-алгоритм."""
-        self.estimators = estimators
-        self.final_estimator = final_estimator
-
-    def _get_meta_features(self, X: pd.DataFrame) -> np.ndarray:
-        """Получает мета-признаки из предсказаний базовых моделей."""
-        meta_features: list[np.ndarray] = []
-        for _, pipe in self.estimators:
-            preds = pipe.predict(X)
-            meta_features.append(preds)
-        return np.column_stack(meta_features)
-
-    def fit(self, X: pd.DataFrame, y: pd.Series) -> "PreTrainedStackingRegressor":
-        """Обучает финальный мета-регрессор на предсказаниях базовых моделей."""
-        X_meta = self._get_meta_features(X)
-        self.final_estimator.fit(X_meta, y)
-        return self
-
-    def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Делает предсказание через мета-регрессор."""
-        X_meta = self._get_meta_features(X)
-        return self.final_estimator.predict(X_meta)
-
-    def score(self, X: pd.DataFrame, y: pd.Series) -> float:
-        """Возвращает RMSE для оценки качества ансамбля."""
-        return root_mean_squared_error(y, self.predict(X))
-
-    def get_params(self) -> dict[str, Any]:
-        """Возвращает параметры для совместимости с логированием."""
-        return {
-            "estimators_count": len(self.estimators),
-            "estimators_names": [name for name, _ in self.estimators],
-        }
-
-
 class PreTrainedVotingRegressor:
     """Регрессор-голосование, который агрегирует предсказания обученных моделей."""
 
@@ -118,12 +83,40 @@ class PreTrainedVotingRegressor:
         }
 
 
-def load_stacking_pipeline(leaderboard: pd.DataFrame, top_k: int | None = None) -> PreTrainedStackingRegressor:
-    """Создаёт стекер из лучших моделей из leaderboard."""
-    pipelines = load_pipelines(leaderboard, top_k)
-    estimators = list(pipelines.items())
+def load_stacking_pipeline(
+    leaderboard: pd.DataFrame,
+    top_k: int | None = None,
+    cv: int = 5,
+    n_jobs: int | None = None,
+    cat_features: list[str] | None = None,
+) -> StackingRegressor:
+    """Создаёт стекер из CV-лучших пайплайнов с fold-local препроцессингом."""
+    cv_leaderboard = leaderboard.dropna(subset=["rmse"])
 
-    return PreTrainedStackingRegressor(estimators=estimators, final_estimator=LinearRegression())
+    pipelines = load_pipelines(
+        cv_leaderboard,
+        top_k=top_k,
+        sort_by="rmse",
+        ascending=False,
+    )
+    estimators = []
+    for name, fitted_pipeline in pipelines.items():
+        estimator = clone(fitted_pipeline)
+        model = estimator.named_steps.get("model")
+        if (
+            model is not None
+            and cat_features
+            and "cat_features" in inspect.signature(model.fit).parameters
+        ):
+            estimator.set_params(model__cat_features=tuple(cat_features))
+        estimators.append((name, estimator))
+
+    return StackingRegressor(
+        estimators=estimators,
+        final_estimator=LinearRegression(),
+        cv=cv,
+        n_jobs=n_jobs,
+    )
 
 
 def load_voting_pipeline(leaderboard: pd.DataFrame, top_k: int | None = None) -> PreTrainedVotingRegressor:
@@ -134,13 +127,35 @@ def load_voting_pipeline(leaderboard: pd.DataFrame, top_k: int | None = None) ->
     return PreTrainedVotingRegressor(estimators=estimators)
 
 
-def load_pipelines(leaderboard: pd.DataFrame, top_k: int | None = None) -> dict[str, Any]:
-    """Загружает сохранённые пайплайны по путям из leaderboard."""
+def load_pipelines(
+    leaderboard: pd.DataFrame,
+    top_k: int | None = None,
+    sort_by: str = "rmse",
+    ascending: bool = True,
+) -> dict[str, Any]:
+    """Загружает базовые model pipelines, пропуская сохранённые ensemble-модели."""
+    ensemble_models = {
+        "StackingRegressor",
+        "PreTrainedVotingRegressor",
+    }
+    is_ensemble = leaderboard["model"].isin(ensemble_models) | leaderboard["path"].astype(
+        str
+    ).str.contains("_ensemble_", regex=False)
+    is_joblib_artifact = leaderboard["path"].map(
+        lambda path: Path(str(path)).suffix.lower() in {".pkl", ".joblib"}
+    )
+    leaderboard = leaderboard.loc[~is_ensemble & is_joblib_artifact]
+    if leaderboard.empty:
+        raise FileNotFoundError(
+            "No compatible joblib model artifacts are available for building an ensemble."
+        )
+
     best_models = (
-        leaderboard.sort_values(by="rmse", ascending=True)
+        leaderboard.sort_values(by=sort_by, ascending=ascending)
         .groupby("model", as_index=False)
         .first()
     )
+    best_models = best_models.sort_values(by=sort_by, ascending=ascending)
 
     if top_k is not None:
         best_models = best_models.head(top_k)
@@ -167,13 +182,30 @@ def ensemble_return(
     n_samples: int | None = None,
 ) -> dict[str, Any]:
     """Формирует словарь с метаданными ансамбля для логирования."""
+    if isinstance(model, StackingRegressor):
+        final_estimator = model.final_estimator
+        params = {
+            "cv": model.cv,
+            "estimators": [name for name, _ in model.estimators],
+            "final_estimator": (
+                {
+                    "name": type(final_estimator).__name__,
+                    "params": final_estimator.get_params(deep=False),
+                }
+                if final_estimator is not None
+                else None
+            ),
+        }
+    else:
+        params = model.get_params()
+
     result: dict[str, Any] = {
         "model": model,
         "mse": metric_to_score.get("mse", None),
         "rmse": metric_to_score.get("rmse", None),
         "r2": metric_to_score.get("r2", None),
         "mae": metric_to_score.get("mae", None),
-        "params": model.get_params(),
+        "params": params,
         "path": path,
     }
 
@@ -199,24 +231,21 @@ def make_ensembles(
     cfg: DictConfig,
     logger: Any = None,
 ) -> None:
-    """Создаёт и оценивает ансамбли из лучших моделей по leaderboard."""
     console = cfg.logging.console
     log_file_path = os.path.join(cfg.data.results_dir, "experiments.jsonl")
 
     leaderboard_df = load_leaderboard(log_file_path)
 
-    ensemble_configs = []
     for ens_cfg in cfg.model.ensemble.list:
-        ensemble_configs.append(
-            {
-                "suffix": ens_cfg.suffix,
-                "factory": lambda ec=ens_cfg: hydra.utils.instantiate(ec.factory, leaderboard=leaderboard_df),
-            }
-        )
-
-    for ens in ensemble_configs:
-        suffix = ens["suffix"]
-        model = ens["factory"]()
+        suffix = ens_cfg.suffix
+        factory_kwargs: dict[str, Any] = {"leaderboard": leaderboard_df}
+        if suffix == "stacking":
+            factory_kwargs.update(
+                cv=cfg.training.cv_folds,
+                n_jobs=cfg.training.n_jobs,
+                cat_features=get_all_categorical_columns(cfg),
+            )
+        model = hydra.utils.instantiate(ens_cfg.factory, **factory_kwargs)
 
         _log(f"\n {model.__class__.__name__}", console)
 

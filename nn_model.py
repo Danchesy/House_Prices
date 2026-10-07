@@ -6,12 +6,11 @@ import hydra
 import numpy as np
 import pandas as pd
 import torch
+from log_utils import _log
 from omegaconf import DictConfig, OmegaConf
+from preprocessing import build_preprocessor
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
-
-from log_utils import _log
-from preprocessing import build_preprocessor
 from utils import model_filename, run_method
 
 
@@ -25,8 +24,9 @@ def _nn_predict(model: nn.Module, X: torch.Tensor, batch_size: int = 32) -> np.n
 
     with torch.no_grad():
         for (batch_X,) in loader:
+            batch_X = batch_X.to(next(model.parameters()).device)
             outputs = model(batch_X)
-            preds.append(outputs.squeeze().numpy())
+            preds.append(outputs.reshape(-1).cpu().numpy())
 
     return np.concatenate(preds)
 
@@ -101,6 +101,7 @@ def nn_eval(
             metric = hydra.utils.instantiate(metric_cfg)
 
             y_pred = val_outputs.squeeze().float()
+            metric = metric.to(y_pred.device)
             metric_score = metric(y_pred, y_val)
 
             if torch.is_tensor(metric_score):
@@ -121,6 +122,7 @@ def nn_train_pipeline(
 ) -> dict[str, Any]:
     """Запускает полный цикл обучения нейросети с предобработкой и сохранением чекпоинта."""
     console = cfg.logging.console
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     preproc = build_preprocessor(
         cfg=cfg,
@@ -145,10 +147,12 @@ def nn_train_pipeline(
         nn.Dropout(cfg.model.nn_model.dropout_rate),
         nn.BatchNorm1d(32),
         nn.Linear(32, 1),
-    )
+    ).to(device)
 
-    y_train_t = torch.tensor(y_train.values, dtype=torch.float32)
-    y_val_t = torch.tensor(y_val.values, dtype=torch.float32)
+    X_train_t = X_train_t.to(device)
+    X_val_t = X_val_t.to(device)
+    y_train_t = torch.tensor(y_train.values, dtype=torch.float32, device=device)
+    y_val_t = torch.tensor(y_val.values, dtype=torch.float32, device=device)
 
     train_dataset = TensorDataset(X_train_t, y_train_t)
     train_loader = DataLoader(
@@ -181,7 +185,7 @@ def nn_train_pipeline(
             patience_counter = 0
 
             model_name = model.__class__.__name__
-            filename = model_filename(cfg, model_name, "states", -metrics["rmse"], extension="pt")
+            filename = model_filename(cfg, model_name, "states", metrics["rmse"], extension="pt")
             checkpoint = {
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),

@@ -11,6 +11,8 @@ max_depth: 8
 
 min_samples_split: 2
 
+n_jobs: ${training.n_jobs}
+
 random_state: ${seed}
 
 is_cat: ${preprocessing.encode_categorical}

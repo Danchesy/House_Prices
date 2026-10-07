@@ -11,6 +11,8 @@ learning_rate: 0.05
 
 depth: 6
 
+thread_count: ${training.n_jobs}
+
 verbose: false
 
 random_seed: ${seed}

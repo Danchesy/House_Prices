@@ -93,6 +93,7 @@ def add_result(
         "rmse": output.get("rmse"),
         "r2": output.get("r2"),
         "mae": output.get("mae"),
+        "cv_score": output.get("mean_score"),
         "std": float(output.get("std_score", 0.0)),
         "params": {str(k): str(v) for k, v in raw_params.items()},
         "tuning_time_sec": output.get("tuning_time_sec"),
